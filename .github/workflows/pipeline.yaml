@@ -1,0 +1,71 @@
+name: pipeline
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - development
+      - main
+
+env:
+  GITOWNER: ${{ secrets.GITOWNER }}
+  ENVIRONMENT: development
+  PROJECT_ID: ${{ secrets.PROJECT_ID }}
+  GAR_LOCATION: ${{ secrets.GAR_LOCATION }}
+  GKE_CLUSTER: ${{ secrets.GKE_CLUSTER }}
+  GKE_ZONE: ${{ secrets.GKE_ZONE }}
+  DEPLOYMENT_NAME: ${{ secrets.DEPLOYMENT_NAME }}
+  REPOSITORY: ${{ secrets.REPOSITORY }}
+  IMAGE: ${{ secrets.IMAGE }}
+  GKE_SA_KEY: ${{ secrets.GKE_SA_KEY }}
+  GIT_ACCESS_SSH_SECRET: ${{ secrets.GIT_ACCESS_SSH_SECRET }}
+
+jobs:
+  setup-build-publish-deploy:
+    if: github.event.pull_request.merged == true
+    name: Setup, Build, Publish, and Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Authenticate with GCloud
+      uses: google-github-actions/auth@v1
+      with:
+        credentials_json: ${{ secrets.GKE_SA_KEY }}
+
+    - name: Configure Docker for GCloud
+      run: gcloud auth configure-docker europe-west3-docker.pkg.dev
+
+    - name: Build and Push Docker Image
+      run: |
+        docker build --tag "$GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA" --build-arg GITHUB_SHA="$GITHUB_SHA" --build-arg GITHUB_REF="$GITHUB_REF" .
+        docker push $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA
+
+    - name: Setup Kustomize
+      run: |
+        curl -sfLo kustomize https://github.com/kubernetes-sigs/kustomize/releases/download/v3.1.0/kustomize_3.1.0_linux_amd64
+        chmod +x kustomize
+        sudo mv kustomize /usr/local/bin/
+
+    - name: Get GKE Credentials
+      uses: google-github-actions/get-gke-credentials@v1
+      with:
+        cluster_name: projects/devops-382008/locations/europe-west3-a/clusters/all-in-one
+        location: ${{ secrets.GKE_ZONE }}  
+
+    - name: Clone k8s-infra and Deploy
+      env:
+        SSH_PRIVATE_KEY: ${{ secrets.GIT_ACCESS_SSH_SECRET }}
+      run: |
+        mkdir -p ~/.ssh
+        echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan github.com >> ~/.ssh/known_hosts
+        git clone git@github.com:callmedevops/k8s-infra.git
+        cd k8s-infra/github-actions/cicd/$ENVIRONMENT
+        kustomize edit set image $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA
+        kustomize build . | kubectl apply -f -
+        kubectl rollout status deployment/$DEPLOYMENT_NAME -n $ENVIRONMENT
