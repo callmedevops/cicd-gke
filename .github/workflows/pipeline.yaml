@@ -64,7 +64,7 @@ jobs:
         echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
         chmod 600 ~/.ssh/id_rsa
         ssh-keyscan github.com >> ~/.ssh/known_hosts
-        git clone git@github.com:callmedevops/k8s-infra.git
+        git clone git@github.com:$GITOWNER/k8s-infra.git
         cd k8s-infra/github-actions/cicd/$ENVIRONMENT
         kustomize edit set image $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$IMAGE:$GITHUB_SHA
         kustomize build . | kubectl apply -f -
